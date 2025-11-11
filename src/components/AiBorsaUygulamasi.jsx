@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import {
   LineChart,
   Line,
@@ -28,6 +28,7 @@ import {
   Send,
   Loader2,
 } from 'lucide-react';
+import { optimizePortfolio, calculatePortfolioMetrics } from '../utils/portfolio';
 // Firebase Imports (Firestore is used for persistent, multi-user apps)
 import { initializeApp } from 'firebase/app';
 import {
@@ -47,6 +48,24 @@ import {
 } from 'firebase/firestore';
 
 // Tailwind CSS is assumed to be available.
+
+const DEFAULT_STOCKS = [
+  { kod: 'THYAO', sektor: 'Ulaştırma', fiyat: 285.5, yillikGetiri: 0.32, volatilite: 0.28 },
+  { kod: 'EREGL', sektor: 'Metal', fiyat: 42.8, yillikGetiri: 0.25, volatilite: 0.35 },
+  { kod: 'TUPRS', sektor: 'Enerji', fiyat: 156.2, yillikGetiri: 0.28, volatilite: 0.3 },
+  { kod: 'AKBNK', sektor: 'Finans', fiyat: 58.4, yillikGetiri: 0.22, volatilite: 0.26 },
+  { kod: 'SAHOL', sektor: 'Holding', fiyat: 94.6, yillikGetiri: 0.2, volatilite: 0.24 },
+  { kod: 'KCHOL', sektor: 'Holding', fiyat: 152.8, yillikGetiri: 0.18, volatilite: 0.22 },
+  { kod: 'PETKM', sektor: 'Kimya', fiyat: 78.9, yillikGetiri: 0.26, volatilite: 0.29 },
+  { kod: 'SISE', sektor: 'Cam', fiyat: 45.3, yillikGetiri: 0.15, volatilite: 0.2 },
+  { kod: 'ASELS', sektor: 'Savunma', fiyat: 68.5, yillikGetiri: 0.35, volatilite: 0.32 },
+  { kod: 'BIMAS', sektor: 'Perakende', fiyat: 142.5, yillikGetiri: 0.24, volatilite: 0.27 },
+  { kod: 'GARAN', sektor: 'Finans', fiyat: 94.2, yillikGetiri: 0.21, volatilite: 0.24 },
+  { kod: 'PGSUS', sektor: 'Turizm', fiyat: 265.5, yillikGetiri: 0.29, volatilite: 0.28 },
+  { kod: 'FROTO', sektor: 'Otomotiv', fiyat: 285.5, yillikGetiri: 0.24, volatilite: 0.28 },
+  { kod: 'CCOLA', sektor: 'Gıda', fiyat: 125.5, yillikGetiri: 0.21, volatilite: 0.23 },
+  { kod: 'GUBRF', sektor: 'Kimya', fiyat: 158.5, yillikGetiri: 0.22, volatilite: 0.26 },
+];
 
 const AiBorsaUygulamasi = () => {
   const [activeTab, setActiveTab] = useState('portfoy');
@@ -80,23 +99,7 @@ const AiBorsaUygulamasi = () => {
   const [yeniHisseMaliyet, setYeniHisseMaliyet] = useState('');
 
   // Simulated Stock Data
-  const hisseler = [
-    { kod: 'THYAO', sektor: 'Ulaştırma', fiyat: 285.5, yillikGetiri: 0.32, volatilite: 0.28 },
-    { kod: 'EREGL', sektor: 'Metal', fiyat: 42.8, yillikGetiri: 0.25, volatilite: 0.35 },
-    { kod: 'TUPRS', sektor: 'Enerji', fiyat: 156.2, yillikGetiri: 0.28, volatilite: 0.30 },
-    { kod: 'AKBNK', sektor: 'Finans', fiyat: 58.4, yillikGetiri: 0.22, volatilite: 0.26 },
-    { kod: 'SAHOL', sektor: 'Holding', fiyat: 94.6, yillikGetiri: 0.20, volatilite: 0.24 },
-    { kod: 'KCHOL', sektor: 'Holding', fiyat: 152.8, yillikGetiri: 0.18, volatilite: 0.22 },
-    { kod: 'PETKM', sektor: 'Kimya', fiyat: 78.9, yillikGetiri: 0.26, volatilite: 0.29 },
-    { kod: 'SISE', sektor: 'Cam', fiyat: 45.3, yillikGetiri: 0.15, volatilite: 0.20 },
-    { kod: 'ASELS', sektor: 'Savunma', fiyat: 68.5, yillikGetiri: 0.35, volatilite: 0.32 },
-    { kod: 'BIMAS', sektor: 'Perakende', fiyat: 142.5, yillikGetiri: 0.24, volatilite: 0.27 },
-    { kod: 'GARAN', sektor: 'Finans', fiyat: 94.2, yillikGetiri: 0.21, volatilite: 0.24 },
-    { kod: 'PGSUS', sektor: 'Turizm', fiyat: 265.5, yillikGetiri: 0.29, volatilite: 0.28 },
-    { kod: 'FROTO', sektor: 'Otomotiv', fiyat: 285.5, yillikGetiri: 0.24, volatilite: 0.28 },
-    { kod: 'CCOLA', sektor: 'Gıda', fiyat: 125.5, yillikGetiri: 0.21, volatilite: 0.23 },
-    { kod: 'GUBRF', sektor: 'Kimya', fiyat: 158.5, yillikGetiri: 0.22, volatilite: 0.26 },
-  ];
+  const hisseler = DEFAULT_STOCKS;
 
   // --- FIREBASE INITIALIZATION AND AUTHENTICATION ---
   useEffect(() => {
@@ -138,74 +141,14 @@ const AiBorsaUygulamasi = () => {
 
   // --- PORTFOLIO OPTIMIZATION LOGIC (SHARPE RATIO) ---
 
-  const optimizePortfoy = () => {
-    const riskFreeRate = 0.10; // Simulated risk-free rate (10%)
-    const skorlar = hisseler
-      .map((h) => ({
-        ...h,
-        skor: (h.yillikGetiri - riskFreeRate) / h.volatilite,
-      }))
-      .sort((a, b) => b.skor - a.skor);
-
-    let portfoy = [];
-    let toplamAgirlik = 0;
-
-    skorlar.slice(0, 8).forEach((hisse) => {
-      const agirlik = Math.min(0.30, (1 - toplamAgirlik) / (8 - portfoy.length));
-      if (agirlik > 0.05) {
-        portfoy.push({ ...hisse, agirlik });
-        toplamAgirlik += agirlik;
-      }
-    });
-
-    const normalizer = 1 / toplamAgirlik;
-    portfoy = portfoy.map((p) => ({ ...p, agirlik: p.agirlik * normalizer }));
-
-    const beklenenGetiri = portfoy.reduce((sum, p) => sum + p.yillikGetiri * p.agirlik, 0);
-    const portfoyVolatilitesi = Math.sqrt(
-      portfoy.reduce((sum, p) => sum + Math.pow(p.volatilite * p.agirlik, 2), 0),
-    );
-    const sharpeOrani = (beklenenGetiri - riskFreeRate) / portfoyVolatilitesi;
-
-    return {
-      dagitim: portfoy,
-      beklenenGetiri: (beklenenGetiri * 100).toFixed(2),
-      sharpeOrani: sharpeOrani.toFixed(2),
-      maxDusus: (-18).toFixed(2), // Placeholder value
-      sektorSayisi: new Set(portfoy.map((p) => p.sektor)).size,
-    };
-  };
-
-  const portfoyData = optimizePortfoy();
+  const portfoyData = useMemo(() => optimizePortfolio(hisseler), [hisseler]);
 
   // --- USER PORTFOLIO LOGIC ---
 
-  const calculateUserPortfoyMetrics = () => {
-    let toplamMaliyet = 0;
-    let toplamDeger = 0;
-
-    userPortfoy.forEach((holding) => {
-      const stockData = hisseler.find((h) => h.kod === holding.kod);
-      if (stockData) {
-        const maliyet = holding.miktar * holding.maliyet;
-        const deger = holding.miktar * stockData.fiyat;
-        toplamMaliyet += maliyet;
-        toplamDeger += deger;
-      }
-    });
-
-    const karZarar = toplamDeger - toplamMaliyet;
-    const getiriYuzdesi = toplamMaliyet > 0 ? (karZarar / toplamMaliyet) * 100 : 0;
-
-    return {
-      toplamDeger: toplamDeger.toFixed(2),
-      toplamMaliyet: toplamMaliyet.toFixed(2),
-      karZarar: karZarar.toFixed(2),
-      getiriYuzdesi: getiriYuzdesi.toFixed(2),
-    };
-  };
-
-  const userPortfoyMetrics = calculateUserPortfoyMetrics();
+  const userPortfoyMetrics = useMemo(
+    () => calculatePortfolioMetrics(userPortfoy, hisseler),
+    [userPortfoy, hisseler],
+  );
 
   const handleAddHisse = (e) => {
     e.preventDefault();
