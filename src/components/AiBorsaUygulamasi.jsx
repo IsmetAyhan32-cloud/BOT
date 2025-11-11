@@ -43,11 +43,9 @@ import {
   doc,
   onSnapshot,
   collection,
+  query,
   addDoc,
   serverTimestamp,
-  deleteDoc,
-  orderBy,
-  query,
 } from 'firebase/firestore';
 
 // Tailwind CSS is assumed to be available.
@@ -70,40 +68,15 @@ const DEFAULT_STOCKS = [
   { kod: 'GUBRF', sektor: 'Kimya', fiyat: 158.5, yillikGetiri: 0.22, volatilite: 0.26 },
 ];
 
-const readFirebaseBootstrap = () => {
-  const globalScope = typeof globalThis !== 'undefined' ? globalThis : {};
-  const appId =
-    typeof globalScope.__app_id !== 'undefined' && globalScope.__app_id
-      ? globalScope.__app_id
-      : 'default-app-id';
-
-  let firebaseConfig = null;
-  if (typeof globalScope.__firebase_config === 'string') {
-    try {
-      firebaseConfig = JSON.parse(globalScope.__firebase_config);
-    } catch (error) {
-      console.error('Firebase yapılandırması ayrıştırılamadı:', error);
-    }
-  }
-
-  const initialAuthToken =
-    typeof globalScope.__initial_auth_token === 'string'
-      ? globalScope.__initial_auth_token
-      : null;
-
-  return { appId, firebaseConfig, initialAuthToken };
-};
-
 const AiBorsaUygulamasi = () => {
-  const bootstrap = useMemo(() => readFirebaseBootstrap(), []);
   const [activeTab, setActiveTab] = useState('portfoy');
   const [seciliHisse, setSeciliHisse] = useState('THYAO');
 
   // Firebase & Auth States (Mandatory Setup)
   const [db, setDb] = useState(null);
+  const [auth, setAuth] = useState(null);
   const [userId, setUserId] = useState(null);
   const [isAuthReady, setIsAuthReady] = useState(false);
-  const [syncState, setSyncState] = useState('local');
 
   // USER DEFINED PORTFOLIO STATE (Currently Local State, but structured for Firestore)
   const [userPortfoy, setUserPortfoy] = useState([
@@ -121,15 +94,6 @@ const AiBorsaUygulamasi = () => {
   const [currentInput, setCurrentInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
 
-  // Simulation states
-  const [simulationTarget, setSimulationTarget] = useState('optimized');
-  const [simulationCapital, setSimulationCapital] = useState('100000');
-  const [simulationDays, setSimulationDays] = useState('252');
-  const [simulationRuns, setSimulationRuns] = useState('500');
-  const [simulationResult, setSimulationResult] = useState(null);
-  const [simulationError, setSimulationError] = useState(null);
-  const [isSimulating, setIsSimulating] = useState(false);
-
   // Input states for adding new stock
   const [yeniHisseKod, setYeniHisseKod] = useState('THYAO');
   const [yeniHisseMiktar, setYeniHisseMiktar] = useState('');
@@ -138,50 +102,21 @@ const AiBorsaUygulamasi = () => {
   // Simulated Stock Data
   const hisseler = DEFAULT_STOCKS;
 
-  const formatCurrency = (value) => {
-    if (!Number.isFinite(value)) {
-      return '₺0';
-    }
-
-    return new Intl.NumberFormat('tr-TR', {
-      style: 'currency',
-      currency: 'TRY',
-      maximumFractionDigits: 0,
-    }).format(value);
-  };
-
-  const formatPercent = (value) => {
-    if (!Number.isFinite(value)) {
-      return '0%';
-    }
-
-    const sign = value > 0 ? '+' : '';
-    return `${sign}${value.toFixed(2)}%`;
-  };
-
-  const formatCompactCurrency = (value) => {
-    if (!Number.isFinite(value)) {
-      return '0';
-    }
-
-    return new Intl.NumberFormat('tr-TR', {
-      notation: 'compact',
-      compactDisplay: 'short',
-      maximumFractionDigits: 1,
-    }).format(value);
-  };
-
   // --- FIREBASE INITIALIZATION AND AUTHENTICATION ---
   useEffect(() => {
     try {
-      const { appId, firebaseConfig, initialAuthToken } = bootstrap;
+      const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+      const firebaseConfig =
+        typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : null;
+      const initialAuthToken =
+        typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
 
       if (firebaseConfig) {
-        setSyncState('connecting');
         const app = initializeApp(firebaseConfig);
         const firestore = getFirestore(app);
         const authentication = getAuth(app);
         setDb(firestore);
+        setAuth(authentication);
 
         onAuthStateChanged(authentication, async (user) => {
           if (!user) {
@@ -193,94 +128,17 @@ const AiBorsaUygulamasi = () => {
             }
           }
           setUserId(authentication.currentUser?.uid || crypto.randomUUID());
-          setSyncState('syncing');
           setIsAuthReady(true);
         });
       } else {
         setUserId(crypto.randomUUID());
         setIsAuthReady(true);
-        setSyncState('local');
       }
     } catch (error) {
       console.error('Firebase initialization failed:', error);
-      setSyncState('error');
       setIsAuthReady(true);
     }
-  }, [bootstrap]);
-
-  useEffect(() => {
-    if (!db || !isAuthReady || !userId || !bootstrap.firebaseConfig) {
-      return undefined;
-    }
-
-    try {
-      const portfolioCollection = collection(
-        db,
-        'artifacts',
-        bootstrap.appId,
-        'users',
-        userId,
-        'portfolio',
-      );
-      const portfolioQuery = query(portfolioCollection, orderBy('created', 'asc'));
-
-      const unsubscribe = onSnapshot(
-        portfolioQuery,
-        (snapshot) => {
-          const holdings = snapshot.docs.map((docSnapshot) => ({
-            id: docSnapshot.id,
-            ...docSnapshot.data(),
-          }));
-          setUserPortfoy(holdings);
-          setSyncState('cloud');
-        },
-        (error) => {
-          console.error('Firestore senkronizasyonu başarısız oldu:', error);
-          setSyncState('error');
-        },
-      );
-
-      return () => {
-        unsubscribe();
-      };
-    } catch (error) {
-      console.error('Firestore dinleyicisi oluşturulamadı:', error);
-      setSyncState('error');
-      return undefined;
-    }
-  }, [db, isAuthReady, userId, bootstrap]);
-
-  const canUseFirestore = Boolean(db && isAuthReady && userId && bootstrap.firebaseConfig);
-
-  const syncBadge = useMemo(() => {
-    switch (syncState) {
-      case 'connecting':
-        return {
-          text: 'Firebase bağlantısı kuruluyor…',
-          className: 'bg-amber-500/10 text-amber-300 border border-amber-500/40',
-        };
-      case 'syncing':
-        return {
-          text: 'Firebase senkronizasyonu hazırlanıyor…',
-          className: 'bg-blue-500/10 text-blue-300 border border-blue-500/40',
-        };
-      case 'cloud':
-        return {
-          text: 'Firebase (ücretsiz katman) ile senkronize',
-          className: 'bg-emerald-500/10 text-emerald-300 border border-emerald-500/40',
-        };
-      case 'error':
-        return {
-          text: 'Firebase senkronizasyonu kapalı (hata)',
-          className: 'bg-rose-500/10 text-rose-300 border border-rose-500/40',
-        };
-      default:
-        return {
-          text: 'Yerel modda çalışıyor',
-          className: 'bg-slate-700/70 text-slate-300 border border-slate-600/60',
-        };
-    }
-  }, [syncState]);
+  }, []);
 
   // --- PORTFOLIO OPTIMIZATION LOGIC (SHARPE RATIO) ---
 
@@ -293,103 +151,7 @@ const AiBorsaUygulamasi = () => {
     [userPortfoy, hisseler],
   );
 
-  const userPortfolioWeights = useMemo(
-    () => deriveWeightsFromHoldings(userPortfoy, hisseler),
-    [userPortfoy, hisseler],
-  );
-
-  const simulationTimeSeries = useMemo(() => {
-    if (!simulationResult) {
-      return [];
-    }
-
-    return simulationResult.timeSeries.map((entry) => ({
-      day: entry.day,
-      low: entry.p10,
-      median: entry.p50,
-      high: entry.p90,
-      mean: entry.mean,
-    }));
-  }, [simulationResult]);
-
-  const simulationDistribution = useMemo(() => {
-    if (!simulationResult) {
-      return [];
-    }
-
-    return simulationResult.distribution.map((bucket, index) => ({
-      ...bucket,
-      index,
-      midpoint: (bucket.binStart + bucket.binEnd) / 2,
-    }));
-  }, [simulationResult]);
-
-  useEffect(() => {
-    if (simulationTarget === 'user') {
-      setSimulationCapital(userPortfoyMetrics.toplamDeger || '0');
-    } else if (simulationTarget === 'optimized') {
-      setSimulationCapital('100000');
-    }
-  }, [simulationTarget, userPortfoyMetrics.toplamDeger]);
-
-  const handleRunSimulation = (event) => {
-    event.preventDefault();
-
-    setSimulationError(null);
-    setSimulationResult(null);
-
-    const parsedCapital = Number(simulationCapital);
-    const parsedDays = Number.parseInt(simulationDays, 10);
-    const parsedRuns = Number.parseInt(simulationRuns, 10);
-
-    if (!Number.isFinite(parsedCapital) || parsedCapital <= 0) {
-      setSimulationError('Lütfen pozitif bir başlangıç sermayesi girin.');
-      return;
-    }
-
-    if (!Number.isInteger(parsedDays) || parsedDays <= 0 || parsedDays > 730) {
-      setSimulationError('Simülasyon süresi 1 ile 730 gün arasında olmalıdır.');
-      return;
-    }
-
-    if (!Number.isInteger(parsedRuns) || parsedRuns <= 0 || parsedRuns > 5000) {
-      setSimulationError('Simülasyon sayısı 1 ile 5000 arasında olmalıdır.');
-      return;
-    }
-
-    const targetWeights =
-      simulationTarget === 'optimized'
-        ? portfoyData.dagitim.map((item) => ({ kod: item.kod, weight: item.agirlik }))
-        : userPortfolioWeights;
-
-    if (!targetWeights.length) {
-      setSimulationError('Seçtiğiniz portföy için simülasyon yapılabilecek ağırlık bulunamadı.');
-      return;
-    }
-
-    setIsSimulating(true);
-
-    try {
-      const result = runMonteCarloSimulation({
-        portfolioWeights: targetWeights,
-        stockUniverse: hisseler,
-        initialCapital: parsedCapital,
-        days: parsedDays,
-        simulations: parsedRuns,
-      });
-
-      setSimulationResult(result);
-    } catch (error) {
-      console.error('Simülasyon başarısız oldu:', error);
-      setSimulationError(
-        error.message || 'Simülasyon çalıştırılırken beklenmeyen bir hata oluştu.',
-      );
-    } finally {
-      setIsSimulating(false);
-    }
-  };
-
-  const handleAddHisse = async (e) => {
+  const handleAddHisse = (e) => {
     e.preventDefault();
     const miktar = parseFloat(yeniHisseMiktar);
     const maliyet = parseFloat(yeniHisseMaliyet);
@@ -406,40 +168,21 @@ const AiBorsaUygulamasi = () => {
       id: Date.now().toString(), // Simple unique ID for local state
     };
 
-    if (canUseFirestore) {
-      try {
-        await addDoc(collection(db, 'artifacts', bootstrap.appId, 'users', userId, 'portfolio'), {
-          kod: newHolding.kod,
-          miktar: newHolding.miktar,
-          maliyet: newHolding.maliyet,
-          created: serverTimestamp(),
-        });
-      } catch (error) {
-        console.error('Firestore ekleme hatası, yerel moda düşülüyor:', error);
-        setSyncState('error');
-        setUserPortfoy((prev) => [...prev, newHolding]);
-      }
-    } else {
-      setUserPortfoy((prev) => [...prev, newHolding]);
-    }
+    // Check if Firestore is ready for potential future integration
+    // if (isAuthReady && db && userId) {
+    //   const portfolioRef = collection(db, `artifacts/${__app_id}/users/${userId}/portfolio`);
+    //   addDoc(portfolioRef, { ...newHolding, created: serverTimestamp() }).catch(console.error);
+    // }
+    setUserPortfoy([...userPortfoy, newHolding]);
 
     // Reset form
     setYeniHisseMiktar('');
     setYeniHisseMaliyet('');
   };
 
-  const handleDeleteHisse = async (id) => {
-    if (canUseFirestore) {
-      try {
-        await deleteDoc(doc(db, 'artifacts', bootstrap.appId, 'users', userId, 'portfolio', id));
-        return;
-      } catch (error) {
-        console.error('Firestore silme hatası, yerel moda düşülüyor:', error);
-        setSyncState('error');
-      }
-    }
-
-    setUserPortfoy((prev) => prev.filter((h) => h.id !== id));
+  const handleDeleteHisse = (id) => {
+    setUserPortfoy(userPortfoy.filter((h) => h.id !== id));
+    // Future Firestore delete logic here
   };
 
   // --- AI CHAT FUNCTIONALITY ---
@@ -646,14 +389,9 @@ const AiBorsaUygulamasi = () => {
         <p className="text-slate-300 mb-8 text-lg">Yapay Zeka Destekli Yatırım Asistanınız</p>
 
         {isAuthReady && userId && (
-          <div className="mb-4 flex flex-wrap items-center gap-3 text-sm text-slate-400 p-3 bg-slate-800/50 rounded-lg border border-slate-700/60">
-            <div className="flex items-center space-x-2">
-              <User className="w-4 h-4 text-blue-400" />
-              <span>Kullanıcı Kimliği: {userId}</span>
-            </div>
-            <span className={`px-3 py-1 rounded-full text-xs font-semibold uppercase tracking-wide ${syncBadge.className}`}>
-              {syncBadge.text}
-            </span>
+          <div className="mb-4 flex items-center space-x-2 text-sm text-slate-400 p-3 bg-slate-800/50 rounded-lg">
+            <User className="w-4 h-4 text-blue-400" />
+            <span>Kullanıcı Kimliği: {userId}</span>
           </div>
         )}
 
@@ -661,7 +399,6 @@ const AiBorsaUygulamasi = () => {
         <div className="flex gap-3 mb-8 overflow-x-auto pb-2 border-b border-slate-700">
           {[
             { id: 'portfoy', label: 'Portföy Optimizasyonu' },
-            { id: 'simulasyon', label: 'Getiri Simülasyonu' },
             { id: 'tahmin', label: 'Fiyat Tahmini (AI)' },
             { id: 'teknik', label: 'Teknik Analiz' },
             { id: 'temel', label: 'Temel Analiz' },
@@ -680,245 +417,6 @@ const AiBorsaUygulamasi = () => {
             </button>
           ))}
         </div>
-
-        {/* SIMULATION TAB */}
-        {activeTab === 'simulasyon' && (
-          <div className="space-y-8">
-            <div className="bg-slate-800/70 rounded-3xl p-6 shadow-2xl border border-slate-700">
-              <h2 className="text-2xl font-bold text-purple-300 mb-4 flex items-center gap-3">
-                <Activity className="w-6 h-6" />
-                <span>Portföy Getiri Simülasyonu</span>
-              </h2>
-              <p className="text-slate-300 text-sm leading-relaxed">
-                Monte Carlo simülasyonları ile seçtiğiniz portföyün olası değer dağılımını ücretsiz Firebase
-                entegrasyonundan beslenen varsayılan verilerle modelleyin. Parametreleri değiştirerek risk ve getiri
-                profilinin nasıl evrildiğini inceleyebilirsiniz.
-              </p>
-
-              <form
-                onSubmit={handleRunSimulation}
-                className="mt-6 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4"
-              >
-                <label className="flex flex-col space-y-2">
-                  <span className="text-sm text-slate-300 font-medium">Simüle Edilecek Portföy</span>
-                  <select
-                    value={simulationTarget}
-                    onChange={(event) => setSimulationTarget(event.target.value)}
-                    className="bg-slate-700 border border-slate-600 rounded-xl px-4 py-3 text-white focus:ring-blue-500 focus:border-blue-500"
-                    disabled={isSimulating}
-                  >
-                    <option value="optimized">AI Optimize Portföy</option>
-                    <option value="user">Kendi Portföyüm</option>
-                  </select>
-                </label>
-
-                <label className="flex flex-col space-y-2">
-                  <span className="text-sm text-slate-300 font-medium">Başlangıç Sermayesi (₺)</span>
-                  <input
-                    type="number"
-                    min="1000"
-                    step="1000"
-                    value={simulationCapital}
-                    onChange={(event) => setSimulationCapital(event.target.value)}
-                    className="bg-slate-700 border border-slate-600 rounded-xl px-4 py-3 text-white focus:ring-blue-500 focus:border-blue-500"
-                    disabled={isSimulating}
-                  />
-                </label>
-
-                <label className="flex flex-col space-y-2">
-                  <span className="text-sm text-slate-300 font-medium">Simülasyon Süresi (Gün)</span>
-                  <input
-                    type="number"
-                    min="30"
-                    max="730"
-                    step="10"
-                    value={simulationDays}
-                    onChange={(event) => setSimulationDays(event.target.value)}
-                    className="bg-slate-700 border border-slate-600 rounded-xl px-4 py-3 text-white focus:ring-blue-500 focus:border-blue-500"
-                    disabled={isSimulating}
-                  />
-                </label>
-
-                <label className="flex flex-col space-y-2">
-                  <span className="text-sm text-slate-300 font-medium">Senaryo Sayısı</span>
-                  <input
-                    type="number"
-                    min="100"
-                    max="5000"
-                    step="100"
-                    value={simulationRuns}
-                    onChange={(event) => setSimulationRuns(event.target.value)}
-                    className="bg-slate-700 border border-slate-600 rounded-xl px-4 py-3 text-white focus:ring-blue-500 focus:border-blue-500"
-                    disabled={isSimulating}
-                  />
-                </label>
-
-                <div className="md:col-span-2 lg:col-span-4 flex justify-end">
-                  <button
-                    type="submit"
-                    className={`flex items-center gap-2 px-6 py-3 rounded-xl font-semibold transition duration-200 ${
-                      isSimulating
-                        ? 'bg-slate-600 text-slate-300 cursor-wait'
-                        : 'bg-purple-600 hover:bg-purple-700 text-white shadow-lg shadow-purple-500/30'
-                    }`}
-                    disabled={isSimulating}
-                  >
-                    {isSimulating ? (
-                      <>
-                        <Loader2 className="w-5 h-5 animate-spin" />
-                        <span>Simülasyon Çalışıyor…</span>
-                      </>
-                    ) : (
-                      <>
-                        <Activity className="w-5 h-5" />
-                        <span>Simülasyonu Başlat</span>
-                      </>
-                    )}
-                  </button>
-                </div>
-              </form>
-
-              {simulationError && (
-                <div className="mt-4 p-4 rounded-xl border border-rose-500/40 bg-rose-900/40 text-rose-200 text-sm">
-                  {simulationError}
-                </div>
-              )}
-            </div>
-
-            {simulationResult && (
-              <>
-                <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-6">
-                  <div className="bg-gradient-to-br from-purple-700 to-purple-900 rounded-3xl p-6 shadow-xl border border-purple-500/40">
-                    <div className="text-sm text-purple-200">Beklenen Nihai Değer</div>
-                    <div className="text-3xl font-extrabold text-purple-100">
-                      {formatCurrency(simulationResult.summary.expectedFinalValue)}
-                    </div>
-                    <div className="text-sm text-purple-200 mt-1">
-                      {formatPercent(simulationResult.summary.expectedReturnPct)}
-                    </div>
-                  </div>
-                  <div className="bg-gradient-to-br from-blue-700 to-blue-900 rounded-3xl p-6 shadow-xl border border-blue-500/40">
-                    <div className="text-sm text-blue-200">Medyan Sonuç</div>
-                    <div className="text-3xl font-extrabold text-blue-100">
-                      {formatCurrency(simulationResult.summary.medianFinalValue)}
-                    </div>
-                  </div>
-                  <div className="bg-gradient-to-br from-emerald-700 to-emerald-900 rounded-3xl p-6 shadow-xl border border-emerald-500/40">
-                    <div className="text-sm text-emerald-200">Olumlu Senaryo (90. Persentil)</div>
-                    <div className="text-3xl font-extrabold text-emerald-100">
-                      {formatCurrency(simulationResult.summary.bestCase)}
-                    </div>
-                    <div className="text-sm text-emerald-200 mt-1">
-                      {formatPercent(simulationResult.summary.bestReturnPct)}
-                    </div>
-                  </div>
-                  <div className="bg-gradient-to-br from-rose-700 to-rose-900 rounded-3xl p-6 shadow-xl border border-rose-500/40">
-                    <div className="text-sm text-rose-200">Olumsuz Senaryo (10. Persentil)</div>
-                    <div className="text-3xl font-extrabold text-rose-100">
-                      {formatCurrency(simulationResult.summary.worstCase)}
-                    </div>
-                    <div className="text-sm text-rose-200 mt-1">
-                      {formatPercent(simulationResult.summary.worstReturnPct)}
-                    </div>
-                    <div className="text-xs text-rose-200 mt-3">
-                      Kayıp olasılığı: {(simulationResult.summary.probabilityOfLoss * 100).toFixed(1)}%
-                    </div>
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                  <div className="bg-slate-800/70 rounded-3xl p-6 shadow-2xl border border-slate-700">
-                    <h3 className="text-xl font-semibold mb-4 text-purple-300">Zaman İçinde Değer Bantları</h3>
-                    <ResponsiveContainer width="100%" height={320}>
-                      <AreaChart data={simulationTimeSeries} margin={{ top: 10, right: 20, left: 0, bottom: 0 }}>
-                        <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
-                        <XAxis dataKey="day" stroke="#9ca3af" label={{ value: 'Gün', position: 'bottom', fill: '#9ca3af' }} />
-                        <YAxis
-                          stroke="#9ca3af"
-                          tickFormatter={(value) => `₺${formatCompactCurrency(value)}`}
-                        />
-                        <Tooltip
-                          contentStyle={{ backgroundColor: '#1e293b', border: '1px solid #475569' }}
-                          formatter={(value, name) => [formatCurrency(value), name]}
-                          labelFormatter={(value) => `Gün ${value}`}
-                        />
-                        <Legend />
-                        <Area
-                          type="monotone"
-                          dataKey="high"
-                          name="90. persentil"
-                          stroke="#10b981"
-                          fill="#10b981"
-                          fillOpacity={0.12}
-                          strokeWidth={2}
-                        />
-                        <Area
-                          type="monotone"
-                          dataKey="low"
-                          name="10. persentil"
-                          stroke="#ef4444"
-                          fill="#ef4444"
-                          fillOpacity={0.12}
-                          strokeWidth={2}
-                        />
-                        <Line
-                          type="monotone"
-                          dataKey="median"
-                          name="Medyan"
-                          stroke="#60a5fa"
-                          strokeWidth={3}
-                          dot={false}
-                        />
-                      </AreaChart>
-                    </ResponsiveContainer>
-                  </div>
-
-                  <div className="bg-slate-800/70 rounded-3xl p-6 shadow-2xl border border-slate-700">
-                    <h3 className="text-xl font-semibold mb-4 text-purple-300">Son Değer Dağılımı</h3>
-                    <ResponsiveContainer width="100%" height={320}>
-                      <BarChart data={simulationDistribution}>
-                        <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
-                        <XAxis
-                          dataKey="index"
-                          stroke="#9ca3af"
-                          tickFormatter={(value) => {
-                            const bucket = simulationDistribution[value];
-                            if (!bucket) return value;
-                            return formatCompactCurrency(bucket.midpoint);
-                          }}
-                          interval={Math.max(0, Math.floor(simulationDistribution.length / 6))}
-                        />
-                        <YAxis stroke="#9ca3af" allowDecimals={false} />
-                        <Tooltip
-                          contentStyle={{ backgroundColor: '#1e293b', border: '1px solid #475569' }}
-                          formatter={(value) => [`${value} senaryo`, 'Frekans']}
-                          labelFormatter={(value) => {
-                            const bucket = simulationDistribution[value];
-                            if (!bucket) return '';
-                            return `${formatCurrency(bucket.binStart)} - ${formatCurrency(bucket.binEnd)}`;
-                          }}
-                        />
-                        <Bar dataKey="count" fill="#a855f7" radius={[10, 10, 0, 0]} />
-                      </BarChart>
-                    </ResponsiveContainer>
-                  </div>
-                </div>
-
-                <div className="bg-slate-800/70 rounded-3xl p-6 shadow-2xl border border-slate-700 flex items-start gap-4">
-                  <AlertCircle className="w-6 h-6 text-amber-300 mt-1" />
-                  <div>
-                    <h3 className="text-lg font-semibold text-amber-300">Yorum</h3>
-                    <p className="text-slate-300 text-sm mt-1 leading-relaxed">
-                      Simülasyonlar rassal değer yolları üretir ve gerçek piyasa koşullarının yalnızca olasılık dağılımı
-                      perspektifinden bir tahminini sunar. Firebase ile senkronize portföyünüzde yaptığınız her değişiklik
-                      yeni bir simülasyonla anında analiz edilebilir.
-                    </p>
-                  </div>
-                </div>
-              </>
-            )}
-          </div>
-        )}
 
         {/* AI CHAT ASSISTANT TAB */}
         {activeTab === 'ai_chat' && (
