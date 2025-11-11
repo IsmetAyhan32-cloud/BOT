@@ -1,6 +1,14 @@
 import { defineConfig } from 'vite';
-import react from '@vitejs/plugin-react';
+
+let reactPluginFactory;
+try {
+  const reactModule = await import('@vitejs/plugin-react');
+  reactPluginFactory = reactModule.default;
+} catch (error) {
+  console.warn('Vite React eklentisi yüklenemedi, boş eklenti kullanılacak:', error?.message ?? error);
+  reactPluginFactory = () => ({ name: 'noop-react-plugin' });
+}
 
 export default defineConfig({
-  plugins: [react()],
+  plugins: [reactPluginFactory()],
 });
