@@ -29,6 +29,7 @@ import {
   Loader2,
 } from 'lucide-react';
 import { optimizePortfolio, calculatePortfolioMetrics } from '../utils/portfolio';
+import { runMonteCarloSimulation, deriveWeightsFromHoldings } from '../utils/simulation';
 // Firebase Imports (Firestore is used for persistent, multi-user apps)
 import { initializeApp } from 'firebase/app';
 import {
