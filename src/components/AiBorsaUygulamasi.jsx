@@ -42,11 +42,9 @@ import {
   doc,
   onSnapshot,
   collection,
+  query,
   addDoc,
   serverTimestamp,
-  deleteDoc,
-  orderBy,
-  query,
 } from 'firebase/firestore';
 
 // Tailwind CSS is assumed to be available.
@@ -69,40 +67,15 @@ const DEFAULT_STOCKS = [
   { kod: 'GUBRF', sektor: 'Kimya', fiyat: 158.5, yillikGetiri: 0.22, volatilite: 0.26 },
 ];
 
-const readFirebaseBootstrap = () => {
-  const globalScope = typeof globalThis !== 'undefined' ? globalThis : {};
-  const appId =
-    typeof globalScope.__app_id !== 'undefined' && globalScope.__app_id
-      ? globalScope.__app_id
-      : 'default-app-id';
-
-  let firebaseConfig = null;
-  if (typeof globalScope.__firebase_config === 'string') {
-    try {
-      firebaseConfig = JSON.parse(globalScope.__firebase_config);
-    } catch (error) {
-      console.error('Firebase yapılandırması ayrıştırılamadı:', error);
-    }
-  }
-
-  const initialAuthToken =
-    typeof globalScope.__initial_auth_token === 'string'
-      ? globalScope.__initial_auth_token
-      : null;
-
-  return { appId, firebaseConfig, initialAuthToken };
-};
-
 const AiBorsaUygulamasi = () => {
-  const bootstrap = useMemo(() => readFirebaseBootstrap(), []);
   const [activeTab, setActiveTab] = useState('portfoy');
   const [seciliHisse, setSeciliHisse] = useState('THYAO');
 
   // Firebase & Auth States (Mandatory Setup)
   const [db, setDb] = useState(null);
+  const [auth, setAuth] = useState(null);
   const [userId, setUserId] = useState(null);
   const [isAuthReady, setIsAuthReady] = useState(false);
-  const [syncState, setSyncState] = useState('local');
 
   // USER DEFINED PORTFOLIO STATE (Currently Local State, but structured for Firestore)
   const [userPortfoy, setUserPortfoy] = useState([
@@ -131,14 +104,18 @@ const AiBorsaUygulamasi = () => {
   // --- FIREBASE INITIALIZATION AND AUTHENTICATION ---
   useEffect(() => {
     try {
-      const { appId, firebaseConfig, initialAuthToken } = bootstrap;
+      const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+      const firebaseConfig =
+        typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : null;
+      const initialAuthToken =
+        typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
 
       if (firebaseConfig) {
-        setSyncState('connecting');
         const app = initializeApp(firebaseConfig);
         const firestore = getFirestore(app);
         const authentication = getAuth(app);
         setDb(firestore);
+        setAuth(authentication);
 
         onAuthStateChanged(authentication, async (user) => {
           if (!user) {
@@ -150,94 +127,17 @@ const AiBorsaUygulamasi = () => {
             }
           }
           setUserId(authentication.currentUser?.uid || crypto.randomUUID());
-          setSyncState('syncing');
           setIsAuthReady(true);
         });
       } else {
         setUserId(crypto.randomUUID());
         setIsAuthReady(true);
-        setSyncState('local');
       }
     } catch (error) {
       console.error('Firebase initialization failed:', error);
-      setSyncState('error');
       setIsAuthReady(true);
     }
-  }, [bootstrap]);
-
-  useEffect(() => {
-    if (!db || !isAuthReady || !userId || !bootstrap.firebaseConfig) {
-      return undefined;
-    }
-
-    try {
-      const portfolioCollection = collection(
-        db,
-        'artifacts',
-        bootstrap.appId,
-        'users',
-        userId,
-        'portfolio',
-      );
-      const portfolioQuery = query(portfolioCollection, orderBy('created', 'asc'));
-
-      const unsubscribe = onSnapshot(
-        portfolioQuery,
-        (snapshot) => {
-          const holdings = snapshot.docs.map((docSnapshot) => ({
-            id: docSnapshot.id,
-            ...docSnapshot.data(),
-          }));
-          setUserPortfoy(holdings);
-          setSyncState('cloud');
-        },
-        (error) => {
-          console.error('Firestore senkronizasyonu başarısız oldu:', error);
-          setSyncState('error');
-        },
-      );
-
-      return () => {
-        unsubscribe();
-      };
-    } catch (error) {
-      console.error('Firestore dinleyicisi oluşturulamadı:', error);
-      setSyncState('error');
-      return undefined;
-    }
-  }, [db, isAuthReady, userId, bootstrap]);
-
-  const canUseFirestore = Boolean(db && isAuthReady && userId && bootstrap.firebaseConfig);
-
-  const syncBadge = useMemo(() => {
-    switch (syncState) {
-      case 'connecting':
-        return {
-          text: 'Firebase bağlantısı kuruluyor…',
-          className: 'bg-amber-500/10 text-amber-300 border border-amber-500/40',
-        };
-      case 'syncing':
-        return {
-          text: 'Firebase senkronizasyonu hazırlanıyor…',
-          className: 'bg-blue-500/10 text-blue-300 border border-blue-500/40',
-        };
-      case 'cloud':
-        return {
-          text: 'Firebase (ücretsiz katman) ile senkronize',
-          className: 'bg-emerald-500/10 text-emerald-300 border border-emerald-500/40',
-        };
-      case 'error':
-        return {
-          text: 'Firebase senkronizasyonu kapalı (hata)',
-          className: 'bg-rose-500/10 text-rose-300 border border-rose-500/40',
-        };
-      default:
-        return {
-          text: 'Yerel modda çalışıyor',
-          className: 'bg-slate-700/70 text-slate-300 border border-slate-600/60',
-        };
-    }
-  }, [syncState]);
+  }, []);
 
   // --- PORTFOLIO OPTIMIZATION LOGIC (SHARPE RATIO) ---
 
@@ -250,7 +150,7 @@ const AiBorsaUygulamasi = () => {
     [userPortfoy, hisseler],
   );
 
-  const handleAddHisse = async (e) => {
+  const handleAddHisse = (e) => {
     e.preventDefault();
     const miktar = parseFloat(yeniHisseMiktar);
     const maliyet = parseFloat(yeniHisseMaliyet);
@@ -267,40 +167,21 @@ const AiBorsaUygulamasi = () => {
       id: Date.now().toString(), // Simple unique ID for local state
     };
 
-    if (canUseFirestore) {
-      try {
-        await addDoc(collection(db, 'artifacts', bootstrap.appId, 'users', userId, 'portfolio'), {
-          kod: newHolding.kod,
-          miktar: newHolding.miktar,
-          maliyet: newHolding.maliyet,
-          created: serverTimestamp(),
-        });
-      } catch (error) {
-        console.error('Firestore ekleme hatası, yerel moda düşülüyor:', error);
-        setSyncState('error');
-        setUserPortfoy((prev) => [...prev, newHolding]);
-      }
-    } else {
-      setUserPortfoy((prev) => [...prev, newHolding]);
-    }
+    // Check if Firestore is ready for potential future integration
+    // if (isAuthReady && db && userId) {
+    //   const portfolioRef = collection(db, `artifacts/${__app_id}/users/${userId}/portfolio`);
+    //   addDoc(portfolioRef, { ...newHolding, created: serverTimestamp() }).catch(console.error);
+    // }
+    setUserPortfoy([...userPortfoy, newHolding]);
 
     // Reset form
     setYeniHisseMiktar('');
     setYeniHisseMaliyet('');
   };
 
-  const handleDeleteHisse = async (id) => {
-    if (canUseFirestore) {
-      try {
-        await deleteDoc(doc(db, 'artifacts', bootstrap.appId, 'users', userId, 'portfolio', id));
-        return;
-      } catch (error) {
-        console.error('Firestore silme hatası, yerel moda düşülüyor:', error);
-        setSyncState('error');
-      }
-    }
-
-    setUserPortfoy((prev) => prev.filter((h) => h.id !== id));
+  const handleDeleteHisse = (id) => {
+    setUserPortfoy(userPortfoy.filter((h) => h.id !== id));
+    // Future Firestore delete logic here
   };
 
   // --- AI CHAT FUNCTIONALITY ---
@@ -507,14 +388,9 @@ const AiBorsaUygulamasi = () => {
         <p className="text-slate-300 mb-8 text-lg">Yapay Zeka Destekli Yatırım Asistanınız</p>
 
         {isAuthReady && userId && (
-          <div className="mb-4 flex flex-wrap items-center gap-3 text-sm text-slate-400 p-3 bg-slate-800/50 rounded-lg border border-slate-700/60">
-            <div className="flex items-center space-x-2">
-              <User className="w-4 h-4 text-blue-400" />
-              <span>Kullanıcı Kimliği: {userId}</span>
-            </div>
-            <span className={`px-3 py-1 rounded-full text-xs font-semibold uppercase tracking-wide ${syncBadge.className}`}>
-              {syncBadge.text}
-            </span>
+          <div className="mb-4 flex items-center space-x-2 text-sm text-slate-400 p-3 bg-slate-800/50 rounded-lg">
+            <User className="w-4 h-4 text-blue-400" />
+            <span>Kullanıcı Kimliği: {userId}</span>
           </div>
         )}
 
